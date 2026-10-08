@@ -1,0 +1,107 @@
+version: 2.1
+
+# Moshi is a single Gradle multi-project build (settings.gradle.kts includes all
+# modules), so there is one job that builds every module rather than one job per
+# directory. Parallelism comes from the kotlinTestMode matrix, which is the same
+# axis the project's own CI used.
+
+executors:
+  jdk:
+    docker:
+      # gradle/libs.versions.toml pins the Java toolchain to jdk = "21".
+      - image: cimg/openjdk:21.0
+    working_directory: ~/moshi
+    environment:
+      # No Gradle daemon in CI; jvmargs mirror gradle.properties.
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+
+jobs:
+  build:
+    parameters:
+      kotlin_test_mode:
+        description: Value for the -PkotlinTestMode Gradle property (see moshi-kotlin-tests/build.gradle.kts).
+        type: enum
+        enum: ["REFLECT", "KSP"]
+    executor: jdk
+    steps:
+      - checkout
+
+      # :moshi:records-tests requests a Java 17 toolchain while everything else
+      # requests 21. The image only ships 21, and this build has no foojay
+      # toolchain resolver, so Gradle needs a locally installed 17 to detect.
+      - run:
+          name: Install JDK 17 for the records-tests toolchain
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y openjdk-17-jdk-headless
+
+      - run:
+          name: Compute dependency cache key
+          command: |
+            find . -path ./build -prune -o \
+              \( -name '*.gradle.kts' -o -name 'libs.versions.toml' \
+                 -o -name 'gradle-wrapper.properties' -o -name 'gradle.properties' \) \
+              -print | sort | xargs cat > gradle-cache-key.txt
+
+      - restore_cache:
+          keys:
+            - gradle-v1-{{ checksum "gradle-cache-key.txt" }}
+            - gradle-v1-
+
+      - run:
+          name: Build and check (test mode << parameters.kotlin_test_mode >>)
+          command: |
+            ./gradlew build check --stacktrace \
+              -PkotlinTestMode=<< parameters.kotlin_test_mode >>
+
+      # Spotless (ktfmt + google-java-format) and japicmp both hook into `check`,
+      # so lint and binary-compatibility are covered by the command above.
+
+      # Saved after the build so subproject dependencies are already resolved.
+      - save_cache:
+          key: gradle-v1-{{ checksum "gradle-cache-key.txt" }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
+
+      - run:
+          name: Collect JUnit XML
+          when: always
+          command: |
+            mkdir -p ~/test-results/junit
+            find . -type f -path '*/build/test-results/*' -name '*.xml' \
+              -exec cp {} ~/test-results/junit/ \;
+
+      - store_test_results:
+          path: ~/test-results
+
+      - store_artifacts:
+          path: ~/test-results/junit
+          destination: junit
+
+      - store_artifacts:
+          path: moshi/build/reports
+          destination: reports/moshi
+
+      - store_artifacts:
+          path: moshi-kotlin-tests/build/reports
+          destination: reports/moshi-kotlin-tests
+
+workflows:
+  ci:
+    jobs:
+      # These two run in parallel; both execute the full `build check`.
+      - build:
+          name: build-reflect
+          kotlin_test_mode: REFLECT
+      - build:
+          name: build-ksp
+          kotlin_test_mode: KSP
+
+# Publishing is intentionally NOT configured here. The project publishes with
+# `./gradlew publish` and expects these environment variables (set them as
+# CircleCI project/context env vars before adding a publish job):
+#   ORG_GRADLE_PROJECT_mavenCentralUsername
+#   ORG_GRADLE_PROJECT_mavenCentralPassword
+#   ORG_GRADLE_PROJECT_signingInMemoryKey
+#   ORG_GRADLE_PROJECT_signingInMemoryKeyPassword

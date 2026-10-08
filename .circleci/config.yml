@@ -1,0 +1,41 @@
+version: 2.1
+
+jobs:
+  build-and-test:
+    docker:
+      - image: cimg/openjdk:21.0
+    working_directory: ~/project
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - v1-gradle-{{ checksum "gradle/libs.versions.toml" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+            - v1-gradle-
+
+      - run:
+          name: Install dependencies
+          command: ./gradlew --no-daemon dependencies
+
+      - save_cache:
+          key: v1-gradle-{{ checksum "gradle/libs.versions.toml" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
+
+      - run:
+          name: Build
+          command: ./gradlew --no-daemon assemble
+
+      - run:
+          name: Test
+          command: ./gradlew --no-daemon test
+
+      - run:
+          name: Lint
+          command: ./gradlew --no-daemon spotlessCheck
+
+workflows:
+  build:
+    jobs:
+      - build-and-test

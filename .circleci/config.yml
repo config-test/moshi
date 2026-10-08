@@ -1,0 +1,41 @@
+version: 2.1
+
+jobs:
+  moshi:
+    docker:
+      - image: cimg/openjdk:21.0
+    resource_class: large
+    environment:
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}
+            - gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-
+
+      - run:
+          name: Install Gradle distribution
+          command: ./gradlew --version
+
+      - run:
+          name: Build and test
+          # `build` runs `assemble` + `check` (unit tests, japicmp) across every
+          # module in settings.gradle.kts.
+          #
+          # :moshi:records-tests pins a Java 17 toolchain while the rest of the
+          # build pins 21, and this image only ships one JDK, so it is excluded
+          # until a second toolchain is available on the executor.
+          command: ./gradlew build -x :moshi:records-tests:build --stacktrace
+
+      - save_cache:
+          key: gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
+
+workflows:
+  build:
+    jobs:
+      - moshi

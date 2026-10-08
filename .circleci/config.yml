@@ -1,0 +1,57 @@
+version: 2.1
+
+jobs:
+  moshi:
+    docker:
+      # Matches the Gradle toolchain pinned in gradle/libs.versions.toml (jdk = "21").
+      - image: cimg/openjdk:21.0
+    resource_class: medium
+    environment:
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2
+    steps:
+      - checkout
+
+      # No dependency lockfile in this repo, so the cache is keyed on the version
+      # catalog plus the Gradle wrapper version.
+      - restore_cache:
+          keys:
+            - gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}
+            - gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-
+            - gradle-v1-
+
+      - run:
+          name: Install (Gradle distribution + plugin classpath)
+          command: ./gradlew help --quiet
+
+      - save_cache:
+          key: gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
+
+      - run:
+          name: Build
+          command: ./gradlew assemble --stacktrace
+
+      - run:
+          name: Test
+          command: ./gradlew test --stacktrace
+
+      - run:
+          name: Lint (spotless)
+          command: ./gradlew spotlessCheck --stacktrace
+
+      - run:
+          name: Collect test results
+          command: |
+            mkdir -p ~/test-results/junit
+            find . -type f -regex ".*/build/test-results/.*\.xml" \
+              -exec cp {} ~/test-results/junit/ \;
+          when: always
+      - store_test_results:
+          path: ~/test-results
+
+workflows:
+  build:
+    jobs:
+      - moshi

@@ -1,0 +1,49 @@
+version: 2.1
+
+jobs:
+  moshi:
+    docker:
+      - image: cimg/openjdk:21.0
+    # Gradle and the codegen tests each allocate a 2 GiB heap.
+    resource_class: large
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            # No dependency lockfile is present; use the pinned build inputs.
+            - v1-gradle-{{ arch }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}-{{ checksum "build.gradle.kts" }}
+      - run:
+          name: Install Gradle and prepare toolchains
+          command: |
+            # Most modules use JDK 21; records-tests explicitly requires JDK 17.
+            # Gradle discovers additional JDKs under ~/.gradle/jdks.
+            if [ ! -x "$HOME/.gradle/jdks/temurin-17/bin/java" ]; then
+              mkdir -p "$HOME/.gradle/jdks/temurin-17"
+              curl --fail --location --retry 3 \
+                'https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse' \
+                --output /tmp/jdk-17.tar.gz
+              tar -xzf /tmp/jdk-17.tar.gz --strip-components=1 \
+                -C "$HOME/.gradle/jdks/temurin-17"
+              rm /tmp/jdk-17.tar.gz
+            fi
+            ./gradlew --no-daemon dependencies
+      - save_cache:
+          key: v1-gradle-{{ arch }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}-{{ checksum "build.gradle.kts" }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
+            - ~/.gradle/jdks
+      - run:
+          name: Build all modules
+          command: ./gradlew --no-daemon --max-workers=2 build
+      - run:
+          name: Test all modules
+          command: ./gradlew --no-daemon --max-workers=2 test
+      - run:
+          name: Check formatting
+          command: ./gradlew --no-daemon --max-workers=2 spotlessCheck
+
+workflows:
+  starter:
+    jobs:
+      - moshi

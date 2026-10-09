@@ -1,0 +1,48 @@
+version: 2.1
+
+jobs:
+  moshi:
+    docker:
+      - image: cimg/openjdk:21.0
+    steps:
+      - checkout
+      # No dependency lockfile: key on the version catalog, wrapper and build scripts.
+      - restore_cache:
+          keys:
+            - gradle-v1-{{ arch }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}-{{ checksum "build.gradle.kts" }}-{{ checksum "settings.gradle.kts" }}-{{ .Revision }}
+            - gradle-v1-{{ arch }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}-{{ checksum "build.gradle.kts" }}-{{ checksum "settings.gradle.kts" }}-
+      - run:
+          name: Install Gradle dependencies and record-test toolchain
+          command: |
+            # Most modules use JDK 21; moshi:records-tests explicitly requires JDK 17.
+            if [ ! -x "$HOME/.jdks/17/bin/java" ]; then
+              mkdir -p "$HOME/.jdks/17"
+              curl --fail --location --retry 3 \
+                'https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse' \
+                --output /tmp/moshi-jdk17.tar.gz
+              tar -xzf /tmp/moshi-jdk17.tar.gz -C "$HOME/.jdks/17" --strip-components=1
+              rm /tmp/moshi-jdk17.tar.gz
+            fi
+            echo "export GRADLE_OPTS=\"-Dorg.gradle.java.installations.paths=$JAVA_HOME,$HOME/.jdks/17\"" >> "$BASH_ENV"
+            source "$BASH_ENV"
+            ./gradlew --no-daemon dependencies
+      - save_cache:
+          key: gradle-v1-{{ arch }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}-{{ checksum "build.gradle.kts" }}-{{ checksum "settings.gradle.kts" }}-{{ .Revision }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
+            - ~/.jdks/17
+      - run:
+          name: Build
+          command: ./gradlew --no-daemon build -x test -x spotlessCheck
+      - run:
+          name: Test
+          command: ./gradlew --no-daemon test
+      - run:
+          name: Lint
+          command: ./gradlew --no-daemon spotlessCheck
+
+workflows:
+  ci:
+    jobs:
+      - moshi

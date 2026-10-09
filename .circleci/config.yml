@@ -1,0 +1,76 @@
+version: 2.1
+
+jobs:
+  moshi:
+    docker:
+      # Gradle runs on JDK 21, which is also the toolchain this build asks for
+      # (gradle/libs.versions.toml -> versions.jdk = "21").
+      - image: cimg/openjdk:21.0
+    resource_class: large
+    environment:
+      # :moshi:records-tests pins a JDK 17 toolchain, which the image does not ship.
+      JDK17_HOME: /home/circleci/jdks/temurin-17
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.workers.max=4
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - v1-gradle-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}
+            - v1-gradle-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-
+
+      - run:
+          name: Install JDK 17 toolchain
+          command: |
+            if [ -x "$JDK17_HOME/bin/java" ]; then
+              echo "JDK 17 restored from cache"
+            else
+              case "$(uname -m)" in
+                aarch64) arch=aarch64 ;;
+                *)       arch=x64 ;;
+              esac
+              mkdir -p "$JDK17_HOME"
+              curl -fsSL -o /tmp/jdk17.tar.gz \
+                "https://api.adoptium.net/v3/binary/latest/17/ga/linux/${arch}/jdk/hotspot/normal/eclipse"
+              tar -xzf /tmp/jdk17.tar.gz -C "$JDK17_HOME" --strip-components=1
+            fi
+            "$JDK17_HOME/bin/java" -version
+
+      - run:
+          name: Download Gradle distribution and resolve dependencies
+          command: ./gradlew -Porg.gradle.java.installations.paths="$JDK17_HOME" testClasses --stacktrace
+
+      - run:
+          name: Build
+          command: ./gradlew -Porg.gradle.java.installations.paths="$JDK17_HOME" assemble --stacktrace
+
+      - run:
+          name: Test
+          command: ./gradlew -Porg.gradle.java.installations.paths="$JDK17_HOME" test --stacktrace
+
+      - run:
+          name: Lint (spotless)
+          command: ./gradlew -Porg.gradle.java.installations.paths="$JDK17_HOME" spotlessCheck --stacktrace
+
+      - run:
+          name: Collect test results
+          when: always
+          command: |
+            mkdir -p ~/test-results
+            find . -type d -path '*/build/test-results/test' -print0 \
+              | xargs -0 -I {} cp -r {}/. ~/test-results/ 2>/dev/null || true
+
+      - store_test_results:
+          path: ~/test-results
+
+      - save_cache:
+          key: v1-gradle-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
+            - ~/jdks
+
+workflows:
+  build:
+    jobs:
+      - moshi
